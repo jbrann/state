@@ -56,12 +56,15 @@ public class TestBed {
 		 * b -> a
 		 * b -> d
 		 * 
+		 * e->f
+		 * f->g
+		 * 
 		 * transition names are:  <state>To<state>  (e.g. aTob)
 		 * 
 		 */
 		
 		ActiveStateMachine.State s;
-		String sa [] = { "a", "b", "c", "d" };
+		String sa [] = { "a", "b", "c", "d", "e", "f", "g" };
 		
 		// build states 
 		for (int i=0;i<sa.length;++i) {
@@ -78,15 +81,19 @@ public class TestBed {
 		//asm.addTransition("c", "b", "cTob", new TbTransitionListener("cTob"));
 		asm.addTransition("b", "d", "bTod", new TbTransitionListener("bTod"));
 		asm.addTransition("b", "a", "bToa", new TbTransitionListener("bToa"));
+		asm.addTransition("e", "f", "eTof", new TbTransitionListener("eTof"));
+		asm.addTransition("f", "g", "fTog", new TbTransitionListener("fTog"));
 		
 //		asm.setInitialState("d");
 		asm.start();
 		asm.start();
 		
-//		asm.setGoalState("b");
-		asm.setGoalState("c");
+		System.out.println ("Setting end to e - should be false:" + asm.setGoalState("e")); // should refuse - no way to get there
+		System.out.println ("Setting end to c - should be true:" + asm.setGoalState("c"));
 		Thread.yield();
 		asm.setGoalState("d");
+		Thread.yield();
+		
 		
 	}
 

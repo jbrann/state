@@ -1,5 +1,6 @@
 package org.brann.state;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Set;
@@ -9,9 +10,11 @@ import java.util.Set;
  * machine for the communication connection. It's a bit like an old-fashioned
  * ship's telegraph where someone on the bridge sends a command
  * ("full-steam-ahead" or "all stop") to the engine room, which strives to
- * fulfill the command, and knows the actual state. The ActiveStateMachine
+ * fulfill the command, and knows the actual state and the steps necessary to 
+ * achieve the goal. The ActiveStateMachine
  * navigates from the current actual state according to the directed graph of
- * allowed transitions towards the goal state. Each transition has a name and an
+ * allowed transitions towards the goal state, using the shortest (in number of states visited) 
+ * path. Each transition has a name and an
  * end state. The same transition name may be attached to many start states. In
  * addition, the State Machine can be guided by outside Events (as in a more
  * classic state machine implementation) The state machine directed graph can be
@@ -20,25 +23,37 @@ import java.util.Set;
  * Clients create the graph of states and transitions by making calls to
  * addState() and addTransition().
  * 
+ * The state machine has an Initial state (where it starts), a Goal state (where it
+ * is trying to go) and a current state (where it is, now).  When the ActiveStateMachine
+ * is started, the Current state is set to the Initial state and the machine strives to
+ * reach the Goal state.  The Current state cannot be directly manipulated by clients
+ * and the Initial state can only be (meaningfully) set before the State Machine has been
+ * started.  The Goal state CAN be changed during the operation of the state machine (the
+ * captain resets from "full ahead" to "all stop" before the engine room had got to "full ahead").
+ * 
+ *  In general, a single ActiveStateMachine is only expected to be used until the Goal is reached
+ *  for the first time.
+ * 
  * Clients can register callbacks on states (StateListener) and transitions
  * (TransitionListener). StateListeners receive callbacks when the state is
  * entered and when it is left. Transition listeners are invoked when the
- * transition occurs FROM the identified starting state for the listener. These
+ * transition occurs. These
  * callbacks can be used to arrest progress through the State graph by blocking
  * until their requirements are satisfied. Multiple callbacks can be registered
  * on a single State or Transition. All will be executed in a single Thread when
  * the appropriate condition becomes true. The system makes no guarantees
  * regarding the order of invocation of callbacks when multiple are triggered on
- * oone Event or transition.
+ * one Event or transition.
  * 
  * Clients can create and trigger Events. An Event attached to a state will
  * trigger a transition away from the state when the client raises the Event.
  * When a client raises the event, the current state is examined to determine if
  * the event applies to it. if it does, the identified transition is triggered.
- * Client (by calling the event() method). This technique can be used to
+ * If it does not, the Event is discarded (Events are not queued until the 
+ * State is current).  This technique can be used to
  * implement a passive state machine; If the Client does not call start(), the
- * ActiveStateMachine does not drive transitions and Events are the only way of
- * changing the State.
+ * ActiveStateMachine does not drive transitions and Events can be used to 
+ * change the State.
  * 
  * A Client can provide their own Thread to drive the Active State Machine by
  * using "SetStateWait()" which will identify the target end state and drive to
@@ -48,21 +63,6 @@ import java.util.Set;
  * 
  */
 public class ActiveStateMachine implements Runnable {
-
-	/**
-	 * default StateListener that takes no action on state entry or exit.
-	 * 
-	 * @author John.Brann
-	 * 
-	 */
-	class nullStateListener implements StateListener {
-
-		public void onEnterState() {
-		}
-
-		public void onLeaveState() {
-		}
-	}
 
 	/**
 	 * A step between states (an edge of the directed graph of states). The name
@@ -83,12 +83,6 @@ public class ActiveStateMachine implements Runnable {
 			this.name = name;
 			this.endState = endState;
 			this.listeners = null;
-		}
-
-		public Transition(String name, State endState, TransitionListener listener) {
-			this.name = name;
-			this.endState = endState;
-			this.addListener(listener);
 		}
 
 		/**
@@ -152,6 +146,9 @@ public class ActiveStateMachine implements Runnable {
 		 */
 		State(String name) {
 			this.name = name;
+			transitions = new LinkedHashMap<String, ActiveStateMachine.Transition>();
+			listeners = new HashSet<StateListener>();
+			events = new HashMap<String, ActiveStateMachine.Transition>();
 		}
 
 		/**
@@ -162,7 +159,7 @@ public class ActiveStateMachine implements Runnable {
 		 * @return
 		 */
 		boolean isTerminal() {
-			return transitions == null;
+			return transitions.isEmpty();
 		}
 
 		/**
@@ -170,7 +167,7 @@ public class ActiveStateMachine implements Runnable {
 		 * 
 		 * @return
 		 */
-		public Set<StateListener> getListener() {
+		public Set<StateListener> getListeners() {
 			return listeners;
 		}
 
@@ -184,9 +181,6 @@ public class ActiveStateMachine implements Runnable {
 		 */
 		public boolean addListener(StateListener listener) {
 
-			if (this.listeners == null) {
-				this.listeners = new HashSet<StateListener>();
-			}
 			if (listeners.contains(listener)) {
 				return (false);
 			} else {
@@ -203,7 +197,7 @@ public class ActiveStateMachine implements Runnable {
 		 *         false otherwise.
 		 */
 		public boolean hasListeners() {
-			return listeners != null;
+			return !listeners.isEmpty();
 		}
 
 		/**
@@ -229,9 +223,6 @@ public class ActiveStateMachine implements Runnable {
 		 */
 		public boolean addTransition(String name, State endState) {
 
-			if (transitions == null) {
-				transitions = new LinkedHashMap<String, Transition>();
-			}
 			// can't have two transitions to the same target state
 			for (Transition t : transitions.values()) {
 				if (t.getEndState() == endState) {
@@ -248,13 +239,12 @@ public class ActiveStateMachine implements Runnable {
 		 * this State
 		 * 
 		 * @param name
-		 * @return the transition, or false if the named transition does not
+		 * @return the transition, or null if the named transition does not
 		 *         leave this State
 		 */
 		public Transition getTransition(String name) {
 
 			return (transitions.get(name));
-
 		}
 
 		/**
@@ -267,44 +257,12 @@ public class ActiveStateMachine implements Runnable {
 		 */
 		public boolean addEvent(String name, String transitionName) {
 
-			if (transitions == null || !transitions.containsKey(transitionName)) {
+			if (!transitions.containsKey(transitionName)) {
 				// the specified transition does not exist
 				return false;
 			}
-			if (events == null) {
-				events = new LinkedHashMap<String, Transition>();
-			}
 			events.put(name, transitions.get(transitionName));
 			return true;
-		}
-	}
-
-	/**
-	 * An externally fired event that triggers a transition of the state
-	 * machine.
-	 * 
-	 * @author John.Brann
-	 * 
-	 */
-	class Event {
-		String name;
-
-		/**
-		 * Build a named Event.
-		 * 
-		 * @param name
-		 */
-		public Event(String name) {
-			this.name = name;
-		}
-
-		/**
-		 * Getter for the Event name.
-		 * 
-		 * @return the Ebvent's name
-		 */
-		public String getName() {
-			return name;
 		}
 	}
 
@@ -319,7 +277,7 @@ public class ActiveStateMachine implements Runnable {
 	}
 
 	/**
-	 * Construct an Active State MAchine, specifying the name of the Thread that
+	 * Construct an Active State Machine, specifying the name of the Thread that
 	 * will drive state progress. This can be useful for debugging.
 	 * 
 	 * @param threadName
@@ -341,7 +299,16 @@ public class ActiveStateMachine implements Runnable {
 
 	/**
 	 * Start the ActiveStateMachine towards its goal. if the ActiveStateMachine
-	 * has alresy been started, does nothing.
+	 * has already been started, does nothing.
+	 * 
+	 * If no states have been defined for the state machine, does nothing.
+	 * 
+	 *  This operation starts a thread that will drive to the defined end state.
+	 *  Once that end state is reached, the thread will exit.
+	 *  
+	 *  The thread will also exit before reaching the goal if it is terminated by the stop() operation,
+	 *  or the goal state is unreachable from the current state.
+	 *  
 	 */
 	public void start() {
 
@@ -365,6 +332,9 @@ public class ActiveStateMachine implements Runnable {
 	 * remain intact. The ActiveStateMachine can be restarted at a later time,
 	 * from the (then current) state.
 	 * 
+	 * Note that if the ActiveStateMachine thread is blocked in a Listener,
+	 * this call may block until the Listener is satisfied.
+	 * 
 	 */
 	public void stop() {
 
@@ -374,20 +344,25 @@ public class ActiveStateMachine implements Runnable {
 		myThread.interrupt();
 		try {
 			myThread.join();
+			//re-create a new Thread for later use.
+			myThread = new Thread(this, tName);
+			myThread.setDaemon(true);
 		} catch (InterruptedException e) {
 			// don't care
 		}
-		myThread = new Thread(this, tName);
-		myThread.setDaemon(true);
 
 	}
 
 	/**
 	 * Create a new State. State names must be unique within an
 	 * ActiveStateMachine. Requesting a state with the same name as one
-	 * previously created returns false;
+	 * previously created returns false
 	 * 
-	 * @param name
+	 * The first successful state added to a StateMachine will default to
+	 * the InitialState of the State Machine.  That default can be overridden
+	 * by a call to setInitialState().
+	 * 
+	 * @param name name of the State being added
 	 * @return true if the State is added, false otherwise.
 	 */
 	public synchronized boolean addState(String name) {
@@ -396,8 +371,10 @@ public class ActiveStateMachine implements Runnable {
 			return false;
 		} else {
 			states.put(name, new State(name));
-			if (initialState == null)
+			if (initialState == null) {  // this is the first state added, default actual and initial states to it.
 				initialState = states.get(name);
+				actualState = initialState;
+			}
 			return true;
 		}
 	}
@@ -501,17 +478,11 @@ public class ActiveStateMachine implements Runnable {
 		Transition t;
 
 		// validate the proposed transition
-		State source = states.get(fromState);
-		State target = states.get(toState);
-		if (source != null && target != null) {
-			if (source.addTransition(name, target)) {
-				if ((t = source.getTransition(name)) != null) {
-					t.addListener(listener);
-					return true;
-				}
-			}
+		if (addTransition(fromState, toState, name)) {
+			return (states.get(fromState).getTransition(name).addListener(listener));
+		} else {
+			return false;
 		}
-		return false;
 	}
 
 	/**
@@ -551,21 +522,10 @@ public class ActiveStateMachine implements Runnable {
 		// If we have reached our goal, or there is nowhere to go, false return.
 		if (goalState == actualState || actualState.isTerminal()) {
 			return false;
-		} else {// iterate over transitions for the one that leads to the target
-				// in the fewest steps.
-			int stepCount = NO_PATH;
-			Transition bestPath = null;
-			for (Transition t : actualState.transitions.values()) {
-
-				java.util.Set<State> visited = new java.util.HashSet<State>();
-				int steps = walkForTarget(visited, t.endState, goalState);
-				if (steps < stepCount) {
-					// this is a better path
-					bestPath = t;
-					stepCount = steps;
-				}
-			}
-
+		} else {
+			
+			Transition bestPath = walkForTarget(new HashSet<State>(), actualState, goalState);
+			
 			/*
 			 * There is a path to the destination Execute the first transition
 			 */
@@ -581,14 +541,32 @@ public class ActiveStateMachine implements Runnable {
 	 * Synchronously transitions to specified target state. WARNING - may take a
 	 * long time, depending on TransitionListener actions.
 	 * 
+	 * If the ActiveStateMachine has been started (start()) and not stopped or finished, 
+	 * this operation does nothing and returns false.
+	 * 
+	 * Note that this operation does NOT alter the current state.  If transitions away from
+	 * the Initial state have occurred (e.g. due to Events or a stopped Active run) the starting state
+	 * is the current state.
+	 * 
 	 * @param targetState
 	 *            The state to go to.
 	 * @return true on success - current state is target, false if at any point
-	 *         progrss to the goal cannot be made.
+	 *         progress to the goal cannot be made.
 	 */
 	public synchronized boolean setStateWait(String targetState) {
 
+		if (started) {  // mustn't do this if the ActiveStateMachine is running.
+			return false;
+		}
+		
 		setGoalState(targetState);
+
+		if (actualState == null) {
+			actualState = initialState;
+		}
+		if (goalState == null) {
+			goalState = initialState;
+		}
 
 		State ts = states.get(targetState);
 
@@ -610,43 +588,56 @@ public class ActiveStateMachine implements Runnable {
 	 *            the current source State in the path
 	 * @param target
 	 *            the target State of the path
-	 * @return a count of the steps in the path or the "No Path" value, if there
-	 *         isn't a path
+	 * @return The transition to take to the next node, null if there is no path (including
+	 * "you are already there").
 	 */
-	int walkForTarget(java.util.Set<State> visited, State source, State target) {
+	Transition walkForTarget(java.util.Set<State> visited, State source, State target) {
 
 		int bestCount = NO_PATH;
+		Transition bestTransition = null;
+		HashSet<State> wkVisited;
+		HashSet<State> bestFromHere = null;
 
-		if (source == target) {
-			// we have arrived at the target
-			return visited.size();
-		}
-
-		if (source.isTerminal()) {
-			// we can't get to the target from here
-			return NO_PATH;
-		}
-
-		if (visited.contains(source)) {
-			// circular graph - can't get to target this way
-			return NO_PATH;
+		if (source == null ||
+			source == target || // we have arrived (can't happen unless bad initial data
+			source.isTerminal() || // no way out of this state
+			visited.contains(source)) { // circular route
+			
+			// can't proceed
+			return null;
 		}
 
 		visited.add(source);
+		
 
 		// for each transition out of this State, count the steps to target
 		// find the minimum and return it.
 
 		for (Transition nextTransition : source.transitions.values()) {
+			
 			int thisCount;
 			State nextState = nextTransition.getEndState();
+			
+			if (nextState == target) { // one hop from target!
+				return nextTransition;
+			}
 
-			thisCount = walkForTarget(visited, nextState, target);
+			wkVisited = (HashSet<State>)((HashSet<State>)visited).clone();
+			
+			if (walkForTarget(wkVisited, nextState, target) != null &&
+				wkVisited.size() < bestCount) {
 
-			if (thisCount < bestCount)
-				bestCount = thisCount;
+				bestCount = wkVisited.size();
+				bestFromHere = (HashSet<State>)wkVisited.clone();
+				bestTransition = nextTransition;
+			}
 		}
-		return bestCount;
+		
+		if (bestFromHere != null) { // we found a viable route
+			visited.clear();
+			visited.addAll(bestFromHere);
+		}
+		return bestTransition;
 	}
 
 	/**
@@ -664,9 +655,11 @@ public class ActiveStateMachine implements Runnable {
 
 		State target;
 
-		// various reasons for failure
-		if (actualState.isTerminal() || (target = states.get(targetState)) == null
-				|| (walkForTarget(new HashSet<State>(), actualState, target) == NO_PATH)) {
+		// various reasons for failure:
+		// Current state is terminal, proposed target doesn't exist in graph, no route to target from current state
+		if (actualState.isTerminal() || 
+			(target = states.get(targetState)) == null ||
+			(walkForTarget(new HashSet<State>(), actualState, target) == null)) {
 
 			return false;
 		} else {
@@ -765,7 +758,7 @@ public class ActiveStateMachine implements Runnable {
 			return;
 		}
 		
-		Set<StateListener> sListeners = actualState.getListener();
+		Set<StateListener> sListeners = actualState.getListeners();
 		
 		if (sListeners != null &&
 			!sListeners.isEmpty()) {
@@ -780,7 +773,7 @@ public class ActiveStateMachine implements Runnable {
 		this.actualState = transition.endState;
 
 		if (actualState != null) {
-			sListeners = actualState.getListener();
+			sListeners = actualState.getListeners();
 		} else {
 			sListeners = null;
 		}
@@ -805,8 +798,15 @@ public class ActiveStateMachine implements Runnable {
 	}
 
 	/**
-	 * Explicitly set the Initial state of the State machine.  This has little effect if the Active State Machine
-	 * has already started - it will be returned by a call to getInitialState, though.
+	 * Explicitly set the Initial state of the State machine. This is the State that the ActiveStateMachine
+	 * begins processing from.
+	 * 
+	 * The default initial state is the first one added
+	 * to the StateMachine, this call can be used to override that setting. 
+	 * 
+	 * This call has little effect if the ActiveStateMachine has been started and has not completed.  It
+	 * does NOT alter the processing of the current run through the State Machine (though it will set
+	 * the value for the next run).
 	 * 
 	 * Setting the initial state does NOT result in any callbacks - 
 	 * even to the StateListener callback for entering the State.
@@ -843,4 +843,8 @@ public class ActiveStateMachine implements Runnable {
 	private boolean started;
 
 	private static final int NO_PATH = Integer.MAX_VALUE;
+
+	public java.util.Map<String, State> getStates() {
+		return states;
+	}
 }
