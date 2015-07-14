@@ -23,11 +23,11 @@ Active State Machine - a state machine that drives itself to a goal.
  is started, the Current state is set to the Initial state and the machine strives to
  reach the Goal state.  The Current state cannot be directly manipulated by clients
  and the Initial state can only be (meaningfully) set before the State Machine has been
- started.  The Goal state CAN be changed during the operation of the state machine (the
- captain resets from "full ahead" to "all stop" before the engine room had got to "full ahead").
+ started.  The Goal state CAN be changed during the operation of the state machine irrespective
+ of whether the (previous) oal had been reached.  progress will move from the current state
+ to the new goal by the shortest path.
  
-  In general, a single ActiveStateMachine is only expected to be used until the Goal is reached
-  for the first time.
+  In general, a single ActiveStateMachine can only be used until a terminal state (one with no transitions leaving it) is reached for the first time.
  
  Clients can register callbacks on states (StateListener) and transitions
  (TransitionListener). StateListeners receive callbacks when the state is
